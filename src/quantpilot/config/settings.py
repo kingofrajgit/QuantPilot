@@ -5,6 +5,7 @@ No credentials are hardcoded or required for standard import or startup.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, SecretStr
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(
         default="INFO",
         description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+    HISTORICAL_DATA_PATH: Path = Field(
+        default=Path("./data/historical"),
+        description="Base filesystem path for historical market data Parquet storage",
     )
 
     # AI / LLM Integration Credentials (Optional at startup; validated when invoked)

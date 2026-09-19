@@ -25,6 +25,8 @@ private/
 *.joblib
 *.h5
 *.onnx
+data/
+storage/
 
 # Python bytecode and build artifacts
 __pycache__/

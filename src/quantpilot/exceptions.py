@@ -29,3 +29,21 @@ class OrderError(BrokerError):
     """Raised when an order cannot be placed, validated, or executed."""
 
     pass
+
+
+class DataStorageError(QuantPilotError):
+    """Base exception for market data persistence and retrieval errors."""
+
+    pass
+
+
+class DataValidationError(DataStorageError):
+    """Raised when a market dataset fails data quality validation before persistence."""
+
+    pass
+
+
+class DataConflictError(DataStorageError):
+    """Raised when incoming market data conflicts with existing records for the same key."""
+
+    pass

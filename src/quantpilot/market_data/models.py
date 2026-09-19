@@ -44,11 +44,13 @@ class DataQualityStatus(str, Enum):
     STALE = "STALE"
 
 
-def _validate_and_normalize_timestamp(v: datetime) -> datetime:
+def _validate_and_normalize_timestamp(v: datetime | str) -> datetime:
     """Ensure timestamp is timezone-aware and normalize to UTC.
 
     Rejects naive datetimes to eliminate ambiguity.
     """
+    if isinstance(v, str):
+        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
     if not isinstance(v, datetime):
         raise ValueError("Timestamp must be a datetime instance")
     if v.tzinfo is None or v.tzinfo.utcoffset(v) is None:

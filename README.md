@@ -147,17 +147,24 @@ QuantPilot/
 │       │   └── zerodha.py         # Safe adapter boundary (live execution disabled)
 │       └── market_data/
 │           ├── __init__.py
-│           ├── models.py          # Canonical models (Instrument, Candle, Quote, Tick)
-│           ├── validation.py      # Deterministic validation, gap and staleness checks
-│           ├── base.py            # MarketDataProvider abstract base class
-│           ├── mock.py            # Deterministic in-memory mock provider
-│           └── zerodha.py         # Safe Zerodha boundary (live ingestion disabled)
+│           ├── models.py              # Canonical models (Instrument, Candle, Quote, Tick)
+│           ├── validation.py          # Deterministic validation, gap and staleness checks
+│           ├── base.py                # MarketDataProvider abstract base class
+│           ├── mock.py                # Deterministic in-memory mock provider
+│           ├── zerodha.py             # Safe Zerodha boundary (live ingestion disabled)
+│           ├── historical_models.py   # HistoricalDatasetMetadata model
+│           ├── historical_base.py     # HistoricalDataProvider and HistoricalDataStore ABCs
+│           ├── parquet_store.py       # ParquetHistoricalDataStore with idempotent merging
+│           ├── local_provider.py      # LocalHistoricalDataProvider
+│           ├── repository.py          # HistoricalDataRepository query layer
+│           └── zerodha_historical.py  # Safe Zerodha historical boundary
 ├── tests/
 │   ├── conftest.py                # Isolated test environment and fixtures
 │   ├── unit/
 │   │   ├── test_config.py         # Config validation and secret redaction tests
 │   │   ├── test_broker.py         # SimulatedBroker and live-barrier safety tests
 │   │   ├── test_market_data.py    # Canonical models, OHLC validation, duplicates, staleness
+│   │   ├── test_historical.py     # Parquet storage, idempotency, repository queries
 │   │   └── test_security.py       # Secret detection and log sanitization tests
 │   └── integration/
 │       └── test_external_optin.py # Safe skip behavior for external integrations
@@ -221,8 +228,68 @@ QuantPilot processes market data through a provider-independent canonical pipeli
 
 ---
 
+## Historical Market Data & Storage (Phase 2B)
+
+QuantPilot provides an offline, provider-independent historical OHLCV data pipeline:
+
+```
+          ┌───────────────────────────┐
+          │  Historical Data Source   │
+          │(Local Parquet/Mock/Future)│
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │  HistoricalDataProvider   │
+          │    (Provider Interface)   │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │     Canonical Candle      │
+          │  (Timezone-aware UTC Bar) │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │    Phase 2A Validation    │
+          │ (validate_candles Engine) │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │    HistoricalDataStore    │
+          │ (Parquet Partition Store) │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │ HistoricalDataRepository  │
+          │ (High-Level Query Engine) │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │ Downstream Quant Engines  │
+          │(Backtest / Research / Risk)│
+          └───────────────────────────┘
+```
+
+- **Provider Abstraction**: Decouples retrieval parameters from physical file layouts or vendor APIs.
+- **Parquet Storage**: Local storage engine partitioned logically by `{exchange}/{symbol}/{timeframe}/data.parquet`.
+- **Validation Before Persistence**: Enforces Phase 2A data quality rules (`validate_candles`) prior to disk writes.
+- **Idempotent Ingestion**:
+  - Exact duplicates on canonical key `(symbol, exchange, timeframe, timestamp)` are merged idempotently without duplication.
+  - Conflicting records for an existing key trigger `DataConflictError`.
+  - Genuinely new bars are appended and sorted chronologically.
+- **Query Repository**: High-level repository exposing `get_candles()`, `has_data()`, and `get_metadata()`, completely abstracting away filesystem mechanics.
+- **Deferred Zerodha Ingestion**: `ZerodhaHistoricalDataProvider` acts strictly as an architectural placeholder boundary; live Zerodha historical-data retrieval is intentionally deferred to a future approved phase.
+
+---
+
 ## Current Status
 
 - [x] **Phase 1: Bootstrap & Security** (Security foundation, centralized settings, SimulatedBroker, CI, secrets scanning)
 - [x] **Phase 2A: Canonical Market Data Foundation** (Canonical models, Pydantic v2 validation, gap/staleness detection, MockMarketDataProvider, Zerodha boundary)
+- [x] **Phase 2B: Historical Market Data & Storage** (Parquet store, idempotent merging, local provider, query repository, Zerodha historical boundary)
 - [ ] *Future Phases*: Technical indicators, Quantitative evidence engine, Risk rules, Paper trading, Live trading.
