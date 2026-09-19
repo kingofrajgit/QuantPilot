@@ -1,5 +1,5 @@
 """Configuration package for QuantPilot."""
 
-from quantpilot.config.settings import Settings, get_settings
+from quantpilot.config.settings import PROJECT_ROOT, Settings, get_settings, resolve_project_path
 
-__all__ = ["Settings", "get_settings"]
+__all__ = ["PROJECT_ROOT", "Settings", "get_settings", "resolve_project_path"]

@@ -1,5 +1,7 @@
 """Parquet-based historical market data storage engine using PyArrow."""
 
+import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,10 +43,13 @@ CANDLE_ARROW_SCHEMA = pa.schema(
 
 
 class ParquetHistoricalDataStore(HistoricalDataStore):
-    """Local Parquet-based historical data store with partition and merge safety.
+    """Local Parquet-based historical data store with atomic manifest transactions.
 
     Partition hierarchy:
-        {base_path}/{exchange}/{symbol}/{timeframe}/data.parquet
+        {base_path}/{exchange}/{symbol}/{timeframe}/
+            manifest.json (atomic transaction pointer)
+            data_{version_id}.parquet (active version dataset)
+            metadata.json (companion metadata for backward compatibility)
     """
 
     def __init__(self, base_path: Path | str | None = None) -> None:
@@ -52,19 +57,55 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
         if base_path is not None:
             self.base_path = Path(base_path)
         else:
-            self.base_path = get_settings().HISTORICAL_DATA_PATH
+            self.base_path = get_settings().resolved_historical_data_path
 
     def _get_partition_dir(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
         """Derive the partition directory for a given series."""
         return self.base_path / exchange.upper() / symbol.upper() / timeframe.value
 
-    def _get_data_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
-        """Derive the Parquet data file path for a given series."""
+    def _get_manifest_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
+        """Derive the atomic manifest pointer file path for a given series."""
+        return self._get_partition_dir(exchange, symbol, timeframe) / "manifest.json"
+
+    def _get_legacy_data_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
+        """Derive legacy fallback Parquet data file path."""
         return self._get_partition_dir(exchange, symbol, timeframe) / "data.parquet"
 
-    def _get_metadata_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
-        """Derive the companion metadata file path for a given series."""
+    def _get_legacy_metadata_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
+        """Derive legacy fallback metadata file path."""
         return self._get_partition_dir(exchange, symbol, timeframe) / "metadata.json"
+
+    def _get_active_data_file(
+        self, exchange: str, symbol: str, timeframe: Timeframe
+    ) -> Path | None:
+        """Return the active Parquet data file using manifest pointer or legacy fallback."""
+        manifest_file = self._get_manifest_file(exchange, symbol, timeframe)
+        if manifest_file.exists():
+            try:
+                manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                target_name = manifest_data.get("data_file")
+                if target_name:
+                    target_file = self._get_partition_dir(exchange, symbol, timeframe) / target_name
+                    if target_file.exists():
+                        return target_file
+            except Exception:
+                pass
+        # Fallback to legacy data.parquet if present
+        legacy = self._get_legacy_data_file(exchange, symbol, timeframe)
+        if legacy.exists():
+            return legacy
+        return None
+
+    def _get_data_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
+        """Derive active data file path, or legacy path if not yet written."""
+        active = self._get_active_data_file(exchange, symbol, timeframe)
+        if active is not None:
+            return active
+        return self._get_legacy_data_file(exchange, symbol, timeframe)
+
+    def _get_metadata_file(self, exchange: str, symbol: str, timeframe: Timeframe) -> Path:
+        """Derive metadata file path."""
+        return self._get_legacy_metadata_file(exchange, symbol, timeframe)
 
     def write(self, candles: list[Candle]) -> HistoricalDatasetMetadata:
         """Store a batch of validated historical candles.
@@ -101,9 +142,6 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
             )
 
         partition_dir = self._get_partition_dir(exchange, symbol, timeframe)
-        data_file = self._get_data_file(exchange, symbol, timeframe)
-        metadata_file = self._get_metadata_file(exchange, symbol, timeframe)
-
         try:
             partition_dir.mkdir(parents=True, exist_ok=True)
         except OSError as ex:
@@ -111,7 +149,7 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
 
         # 2. Merge with existing data if present
         existing_candles: list[Candle] = []
-        if data_file.exists():
+        if self.exists(symbol=symbol, exchange=exchange, timeframe=timeframe):
             existing_candles = self.read(symbol=symbol, exchange=exchange, timeframe=timeframe)
 
         merged_map: dict[datetime, Candle] = {}
@@ -147,7 +185,7 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
         # Sort all candles chronologically
         sorted_candles = sorted(merged_map.values(), key=lambda x: x.timestamp)
 
-        # 3. Build PyArrow Table and write Parquet
+        # 3. Build PyArrow Table
         col_symbol = [c.symbol for c in sorted_candles]
         col_exchange = [c.exchange for c in sorted_candles]
         col_timeframe = [c.timeframe.value for c in sorted_candles]
@@ -173,10 +211,14 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
             schema=CANDLE_ARROW_SCHEMA,
         )
 
-        try:
-            pq.write_table(table, data_file, compression="snappy")
-        except Exception as ex:
-            raise DataStorageError(f"Failed to write Parquet data to {data_file}: {ex}") from ex
+        # 4. True Atomic Staging and Commit
+        version_id = uuid.uuid4().hex[:12]
+        op_id = uuid.uuid4().hex[:8]
+        staged_data_file = partition_dir / f"data_{version_id}.parquet.tmp.{op_id}"
+        committed_data_file = partition_dir / f"data_{version_id}.parquet"
+        staged_manifest_file = partition_dir / f"manifest.json.tmp.{op_id}"
+        manifest_file = self._get_manifest_file(exchange, symbol, timeframe)
+        legacy_meta_file = self._get_legacy_metadata_file(exchange, symbol, timeframe)
 
         metadata = HistoricalDatasetMetadata(
             symbol=symbol,
@@ -190,9 +232,46 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
         )
 
         try:
-            metadata_file.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
-        except OSError as ex:
-            raise DataStorageError(f"Failed to write metadata to {metadata_file}: {ex}") from ex
+            # Stage new parquet file
+            pq.write_table(table, staged_data_file, compression="snappy")
+            staged_data_file.replace(committed_data_file)
+
+            # Stage manifest binding data and metadata in one atomic payload
+            manifest_payload = {
+                "version": version_id,
+                "data_file": committed_data_file.name,
+                "metadata": metadata.model_dump(mode="json"),
+            }
+            staged_manifest_file.write_text(
+                json.dumps(manifest_payload, indent=2), encoding="utf-8"
+            )
+
+            # ATOMIC COMMIT: Single filesystem replace operation
+            staged_manifest_file.replace(manifest_file)
+
+            # Maintain companion metadata.json for backward compatibility
+            try:
+                legacy_meta_file.write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
+            except OSError:
+                pass
+
+            # Cleanup older generation files after successful atomic commit
+            for p in partition_dir.glob("data_*.parquet"):
+                if p.name != committed_data_file.name:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+        except Exception as ex:
+            # Staging or commit failed: clean up all temporary and staged files
+            for tmp in [staged_data_file, committed_data_file, staged_manifest_file]:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+            # Existing manifest_file was untouched
+            raise DataStorageError(f"Failed to atomically persist dataset: {ex}") from ex
 
         return metadata
 
@@ -205,8 +284,8 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
         end: datetime | None = None,
     ) -> list[Candle]:
         """Read historical candles filtered by optional date range."""
-        data_file = self._get_data_file(exchange, symbol, timeframe)
-        if not data_file.exists():
+        data_file = self._get_active_data_file(exchange, symbol, timeframe)
+        if data_file is None or not data_file.exists():
             return []
 
         if start is not None and end is not None:
@@ -260,13 +339,22 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
 
     def exists(self, symbol: str, exchange: str, timeframe: Timeframe) -> bool:
         """Check whether historical data file exists for series."""
-        return self._get_data_file(exchange, symbol, timeframe).exists()
+        return self._get_active_data_file(exchange, symbol, timeframe) is not None
 
     def get_metadata(
         self, symbol: str, exchange: str, timeframe: Timeframe
     ) -> HistoricalDatasetMetadata | None:
         """Retrieve dataset metadata if stored."""
-        meta_file = self._get_metadata_file(exchange, symbol, timeframe)
+        manifest_file = self._get_manifest_file(exchange, symbol, timeframe)
+        if manifest_file.exists():
+            try:
+                manifest_dict = json.loads(manifest_file.read_text(encoding="utf-8"))
+                if "metadata" in manifest_dict:
+                    return HistoricalDatasetMetadata.model_validate(manifest_dict["metadata"])
+            except Exception:
+                pass
+
+        meta_file = self._get_legacy_metadata_file(exchange, symbol, timeframe)
         if not meta_file.exists():
             return None
 
@@ -282,12 +370,31 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
             return []
 
         datasets: list[HistoricalDatasetMetadata] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+
+        # Check manifest files first
+        for manifest_path in self.base_path.glob("*/*/*/manifest.json"):
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                meta = HistoricalDatasetMetadata.model_validate(manifest_data["metadata"])
+                key = (meta.symbol, meta.exchange, meta.timeframe.value)
+                datasets.append(meta)
+                seen_keys.add(key)
+            except Exception:
+                continue
+
+        # Check legacy metadata files
         for meta_path in self.base_path.glob("*/*/*/metadata.json"):
             try:
                 content = meta_path.read_text(encoding="utf-8")
-                datasets.append(HistoricalDatasetMetadata.model_validate_json(content))
+                meta = HistoricalDatasetMetadata.model_validate_json(content)
+                key = (meta.symbol, meta.exchange, meta.timeframe.value)
+                if key not in seen_keys:
+                    datasets.append(meta)
+                    seen_keys.add(key)
             except Exception:
                 continue
+
         return datasets
 
     def delete(self, symbol: str, exchange: str, timeframe: Timeframe) -> bool:
@@ -296,14 +403,30 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
         if not partition_dir.exists():
             return False
 
-        data_file = self._get_data_file(exchange, symbol, timeframe)
-        meta_file = self._get_metadata_file(exchange, symbol, timeframe)
-
         try:
-            if data_file.exists():
-                data_file.unlink()
+            manifest_file = self._get_manifest_file(exchange, symbol, timeframe)
+            meta_file = self._get_legacy_metadata_file(exchange, symbol, timeframe)
+            legacy_data = self._get_legacy_data_file(exchange, symbol, timeframe)
+
+            if manifest_file.exists():
+                manifest_file.unlink()
             if meta_file.exists():
                 meta_file.unlink()
+            if legacy_data.exists():
+                legacy_data.unlink()
+
+            for p in partition_dir.glob("data_*.parquet"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+            for tmp in partition_dir.glob("*.tmp*"):
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
             # Attempt to clean up empty directory
             try:
                 partition_dir.rmdir()

@@ -287,9 +287,90 @@ QuantPilot provides an offline, provider-independent historical OHLCV data pipel
 
 ---
 
+## Historical Data Ingestion & Dataset Management (Phase 2C)
+
+QuantPilot provides an atomic, offline historical market data ingestion pipeline supporting local CSV and Parquet sources:
+
+```
+          ┌───────────────────────────┐
+          │   Raw File (CSV/Parquet)  │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │     Ingestion Service     │
+          │(HistoricalDataIngestion..)│
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │  Normalization & Parsing  │
+          │(UTC Timestamp, Finite OHLC│
+          │ Positive P, Non-negative V│
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │     Canonical Candle      │
+          │    (Phase 2A Models)      │
+          └─────────────┬─────────────┘
+                        │
+                        ▼
+          ┌───────────────────────────┐
+          │    In-Batch & In-Store    │
+          │  Deduplication & Conflict │
+          └─────────────┬─────────────┘
+                        │
+         ┌──────────────┴──────────────┐
+         ▼                             ▼
+ [Conflict/Failure]             [Zero Conflicts]
+         │                             │
+         ▼                             ▼
+ ┌───────────────┐             ┌───────────────┐
+ │  ABORT WRITE  │             │ Atomic Staged │
+ │   0 Written   │             │ Write & Commit│
+ │ Status=FAILED │             │Status=SUCCESS │
+ └───────────────┘             └───────┬───────┘
+                                       │
+                                       ▼
+                               ┌───────────────┐
+                               │IngestionReport│
+                               │& Coverage Stat│
+                               └───────────────┘
+```
+
+### Core Invariants & Architecture
+- **Atomic All-or-Nothing Persistence**: If *any* parse error, validation failure, or data conflict is encountered in an ingestion batch, **zero candles are written** to storage and status is reported as `FAILED`.
+- **True Atomic Persistence**: Storage uses a staged write-and-replace transaction mechanism (`manifest.json` pointer). A failure before commit leaves the existing store 100% untouched and leaves no orphan temporary files.
+- **Idempotent Deduplication**: Identical existing records are skipped cleanly without duplicating entries. Conflicting records for an existing key trigger an atomic abort.
+- **Strict OHLCV Semantics**: Enforces $O, H, L, C > 0$, $V \ge 0$, and strictly rejects non-finite values (`NaN`, `+Infinity`, `-Infinity`).
+- **UTC Timezone Enforcement**: Naive timestamps are rejected unless `source_timezone` is explicitly specified. All timestamps are stored in UTC.
+- **Conservative Coverage Reporting**: Timeframe-based chronological gap detection.
+  > *Phase 2C does not yet provide exchange-calendar-aware gap classification. Gap detection is chronological/timeframe based and should be interpreted as a potential data-quality indicator.*
+- **Deterministic Path Portability**: Relative application paths resolve deterministically against `PROJECT_ROOT = Path(__file__).resolve().parents[3]` regardless of the current working directory.
+- **CLI Interface**:
+  ```bash
+  quantpilot data ingest \
+    --source ./data/sample.csv \
+    --format csv \
+    --symbol RELIANCE \
+    --exchange NSE \
+    --timeframe 1d \
+    --timezone Asia/Kolkata
+  ```
+
+> [!NOTE]
+> **Phase 2C Scope Boundary**:
+> - Phase 2C uses local historical files only. Live Zerodha historical-data retrieval remains deferred.
+> - No live network access, order execution, indicators, or trading strategies are implemented.
+
+---
+
 ## Current Status
 
 - [x] **Phase 1: Bootstrap & Security** (Security foundation, centralized settings, SimulatedBroker, CI, secrets scanning)
 - [x] **Phase 2A: Canonical Market Data Foundation** (Canonical models, Pydantic v2 validation, gap/staleness detection, MockMarketDataProvider, Zerodha boundary)
 - [x] **Phase 2B: Historical Market Data & Storage** (Parquet store, idempotent merging, local provider, query repository, Zerodha historical boundary)
+- [x] **Phase 2C: Historical Data Ingestion & Dataset Management** (CSV/Parquet ingestion, atomic persistence, deduplication, conflict detection, CLI, coverage reports)
 - [ ] *Future Phases*: Technical indicators, Quantitative evidence engine, Risk rules, Paper trading, Live trading.
+

@@ -13,6 +13,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from quantpilot.exceptions import ConfigurationError
 
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[3]
+
+
+def resolve_project_path(path: Path | str) -> Path:
+    """Deterministically resolve a filesystem path.
+
+    If the provided path is relative, it is resolved against PROJECT_ROOT
+    regardless of the current working directory. Absolute paths remain absolute.
+    """
+    p = Path(path)
+    return p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
+
 
 class Settings(BaseSettings):
     """Application settings with fail-closed security and safe secret handling."""
@@ -41,6 +53,20 @@ class Settings(BaseSettings):
         default=Path("./data/historical"),
         description="Base filesystem path for historical market data Parquet storage",
     )
+    LOG_PATH: Path = Field(
+        default=Path("./logs"),
+        description="Base filesystem path for application logs",
+    )
+
+    @property
+    def resolved_historical_data_path(self) -> Path:
+        """Return HISTORICAL_DATA_PATH deterministically resolved against PROJECT_ROOT."""
+        return resolve_project_path(self.HISTORICAL_DATA_PATH)
+
+    @property
+    def resolved_log_path(self) -> Path:
+        """Return LOG_PATH deterministically resolved against PROJECT_ROOT."""
+        return resolve_project_path(self.LOG_PATH)
 
     # AI / LLM Integration Credentials (Optional at startup; validated when invoked)
     ANTHROPIC_API_KEY: SecretStr | None = Field(

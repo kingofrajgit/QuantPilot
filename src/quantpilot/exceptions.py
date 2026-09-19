@@ -47,3 +47,27 @@ class DataConflictError(DataStorageError):
     """Raised when incoming market data conflicts with existing records for the same key."""
 
     pass
+
+
+class IngestionError(QuantPilotError):
+    """Base exception for market data ingestion errors."""
+
+    pass
+
+
+class InvalidSourceFormatError(IngestionError):
+    """Raised when source format is unsupported or unrecognized."""
+
+    pass
+
+
+class MissingRequiredColumnError(IngestionError):
+    """Raised when raw historical data is missing required OHLCV columns."""
+
+    pass
+
+
+class InvalidTimestampError(IngestionError):
+    """Raised when candle timestamps are unparseable, naive without timezone, or invalid."""
+
+    pass

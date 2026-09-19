@@ -7,6 +7,13 @@ from quantpilot.market_data.historical_base import (
     validate_historical_range,
 )
 from quantpilot.market_data.historical_models import HistoricalDatasetMetadata
+from quantpilot.market_data.ingestion_models import (
+    DatasetCoverageReport,
+    IngestionFormat,
+    IngestionRunStatus,
+    IngestionSummary,
+)
+from quantpilot.market_data.ingestion_service import HistoricalDataIngestionService
 from quantpilot.market_data.local_provider import LocalHistoricalDataProvider
 from quantpilot.market_data.mock import MockMarketDataProvider
 from quantpilot.market_data.models import (
@@ -35,10 +42,15 @@ __all__ = [
     "Candle",
     "DataQualityReport",
     "DataQualityStatus",
+    "DatasetCoverageReport",
+    "HistoricalDataIngestionService",
     "HistoricalDataProvider",
     "HistoricalDataRepository",
     "HistoricalDataStore",
     "HistoricalDatasetMetadata",
+    "IngestionFormat",
+    "IngestionRunStatus",
+    "IngestionSummary",
     "Instrument",
     "LocalHistoricalDataProvider",
     "MarketDataProvider",
