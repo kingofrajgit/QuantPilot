@@ -140,16 +140,24 @@ QuantPilot/
 │       ├── security/
 │       │   ├── __init__.py
 │       │   └── sanitizer.py       # Credential and log sanitization utilities
-│       └── broker/
+│       ├── broker/
+│       │   ├── __init__.py
+│       │   ├── base.py            # Broker interface, Order, Position, AccountBalance
+│       │   ├── simulated.py       # Deterministic in-memory simulated broker
+│       │   └── zerodha.py         # Safe adapter boundary (live execution disabled)
+│       └── market_data/
 │           ├── __init__.py
-│           ├── base.py            # Broker interface, Order, Position, AccountBalance
-│           ├── simulated.py       # Deterministic in-memory simulated broker
-│           └── zerodha.py         # Safe adapter boundary (live execution disabled)
+│           ├── models.py          # Canonical models (Instrument, Candle, Quote, Tick)
+│           ├── validation.py      # Deterministic validation, gap and staleness checks
+│           ├── base.py            # MarketDataProvider abstract base class
+│           ├── mock.py            # Deterministic in-memory mock provider
+│           └── zerodha.py         # Safe Zerodha boundary (live ingestion disabled)
 ├── tests/
 │   ├── conftest.py                # Isolated test environment and fixtures
 │   ├── unit/
 │   │   ├── test_config.py         # Config validation and secret redaction tests
 │   │   ├── test_broker.py         # SimulatedBroker and live-barrier safety tests
+│   │   ├── test_market_data.py    # Canonical models, OHLC validation, duplicates, staleness
 │   │   └── test_security.py       # Secret detection and log sanitization tests
 │   └── integration/
 │       └── test_external_optin.py # Safe skip behavior for external integrations
@@ -162,12 +170,59 @@ QuantPilot/
 
 ---
 
-## Current Status: Phase 1 Bootstrap
+## Market Data Architecture
 
-- [x] Public repository security foundation & `.gitignore`
-- [x] Centralized configuration management with fail-closed security
-- [x] Deterministic `SimulatedBroker` implementation
-- [x] `ZerodhaBroker` safe boundary (live order execution disabled)
-- [x] Security sanitization utility for logs and exceptions
-- [x] Automated test suite & CI workflow with secret scanning
-- [ ] *Future Phases*: Market data ingestion, Backtesting engine, Paper trading, Quantitative strategies.
+QuantPilot processes market data through a provider-independent canonical pipeline. Downstream quantitative analysis and risk validation consume only canonical, validated data structures:
+
+```
+          ┌─────────────────────────┐
+          │  Market Data Provider   │
+          │  (Mock / Synthetic /    │
+          │   Future Zerodha)       │
+          └────────────┬────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │      Normalization      │
+          │  (Timezone-aware UTC)   │
+          └────────────┬────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │ Canonical Market Models │
+          │(Instrument,Candle,Quote)│
+          └────────────┬────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │     Data Validation     │
+          │(OHLC, Order, Duplicates)│
+          └────────────┬────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │   Data Quality Report   │
+          │(VALID/STALE/INVALID/GAP)│
+          └────────────┬────────────┘
+                       │
+                       ▼
+          ┌─────────────────────────┐
+          │  Downstream Consumers   │
+          │ (Quant Validation/Risk) │
+          └─────────────────────────┘
+```
+
+> [!NOTE]
+> **Phase 2A Status**:
+> - External market-data providers and live WebSocket streaming are **intentionally not connected yet**.
+> - All tests and development currently use synthetic/mock data generated deterministically via `MockMarketDataProvider`.
+> - `ZerodhaMarketDataAdapter` acts strictly as an architectural placeholder boundary; live data ingestion will be implemented in a future approved phase.
+> - Live trading remains strictly **disabled** (`LIVE_TRADING_ENABLED=false`).
+
+---
+
+## Current Status
+
+- [x] **Phase 1: Bootstrap & Security** (Security foundation, centralized settings, SimulatedBroker, CI, secrets scanning)
+- [x] **Phase 2A: Canonical Market Data Foundation** (Canonical models, Pydantic v2 validation, gap/staleness detection, MockMarketDataProvider, Zerodha boundary)
+- [ ] *Future Phases*: Technical indicators, Quantitative evidence engine, Risk rules, Paper trading, Live trading.
