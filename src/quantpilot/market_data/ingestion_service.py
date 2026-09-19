@@ -446,13 +446,13 @@ class HistoricalDataIngestionService:
         return val
 
     def _candles_equal(self, a: Candle, b: Candle) -> bool:
-        """Compare two candles for numerical equality within precision."""
+        """Compare two candles for exact numerical equality."""
         return (
-            abs(a.open - b.open) < 1e-9
-            and abs(a.high - b.high) < 1e-9
-            and abs(a.low - b.low) < 1e-9
-            and abs(a.close - b.close) < 1e-9
-            and abs(a.volume - b.volume) < 1e-9
+            a.open == b.open
+            and a.high == b.high
+            and a.low == b.low
+            and a.close == b.close
+            and a.volume == b.volume
         )
 
     def _read_csv(

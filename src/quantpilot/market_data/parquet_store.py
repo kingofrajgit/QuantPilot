@@ -160,14 +160,15 @@ class ParquetHistoricalDataStore(HistoricalDataStore):
             ts = c.timestamp
             if ts in merged_map:
                 existing = merged_map[ts]
-                # Compare OHLCV for identical idempotency
+                # Compare OHLCV for exact identical idempotency
                 is_identical = (
-                    abs(c.open - existing.open) < 1e-9
-                    and abs(c.high - existing.high) < 1e-9
-                    and abs(c.low - existing.low) < 1e-9
-                    and abs(c.close - existing.close) < 1e-9
-                    and abs(c.volume - existing.volume) < 1e-9
+                    c.open == existing.open
+                    and c.high == existing.high
+                    and c.low == existing.low
+                    and c.close == existing.close
+                    and c.volume == existing.volume
                 )
+
                 if not is_identical:
                     key_str = f"({symbol}, {exchange}, {timeframe.value}, {ts.isoformat()})"
                     in_s = f"O:{c.open}, H:{c.high}, L:{c.low}, C:{c.close}, V:{c.volume}"

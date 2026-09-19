@@ -757,3 +757,96 @@ def test_manifest_guarantees_data_metadata_consistency(tmp_path):
     assert meta_read.record_count == 15
     assert meta_read.earliest_timestamp == candles[0].timestamp
     assert meta_read.latest_timestamp == candles[-1].timestamp
+
+
+def test_simulated_manifest_commit_failure_leaves_dataset_unchanged(tmp_path):
+    """Verify failure at the manifest commit point preserves original dataset and manifest."""
+    store_dir = tmp_path / "store"
+    store = ParquetHistoricalDataStore(base_path=store_dir)
+    service = HistoricalDataIngestionService(store=store)
+
+    # 1. Initial 5 candles committed cleanly
+    initial_candles = generate_synthetic_daily_candles(5)
+    csv_initial = tmp_path / "initial.csv"
+    write_csv_file(csv_initial, initial_candles)
+    s1 = service.ingest(csv_initial, "csv", "RELIANCE", "NSE", "1d")
+    assert s1.status == IngestionRunStatus.SUCCESS
+
+    partition_dir = store_dir / "NSE" / "RELIANCE" / "1d"
+    manifest_file = partition_dir / "manifest.json"
+    assert manifest_file.exists()
+
+    # 2. Capture original manifest and original dataset
+    original_manifest_text = manifest_file.read_text(encoding="utf-8")
+    original_stored_candles = store.read("RELIANCE", "NSE", Timeframe.D1)
+    assert len(original_stored_candles) == 5
+
+    # 3. Prepare a second valid ingestion batch
+    new_candles = generate_synthetic_daily_candles(
+        5, start_dt=datetime(2026, 2, 1, tzinfo=timezone.utc)
+    )
+    csv_new = tmp_path / "new_batch.csv"
+    write_csv_file(csv_new, new_candles)
+
+    # 4. Simulate failure specifically at the manifest commit replacement
+    real_replace = Path.replace
+
+    def fail_on_manifest_replace(self, target, *args, **kwargs):
+        # Allow staged_data_file.replace(committed_data_file), fail on manifest.json
+        if str(target).endswith("manifest.json"):
+            raise OSError("Simulated Manifest Commit Atomic Failure")
+        return real_replace(self, target, *args, **kwargs)
+
+    with mock.patch.object(Path, "replace", autospec=True, side_effect=fail_on_manifest_replace):
+        s2 = service.ingest(csv_new, "csv", "RELIANCE", "NSE", "1d")
+        assert s2.status == IngestionRunStatus.FAILED
+        assert s2.records_written == 0
+
+    # 5. Verify original manifest remained 100% unchanged
+    assert manifest_file.read_text(encoding="utf-8") == original_manifest_text
+
+    # 6. Verify reading the store returns exactly the original dataset
+    current_stored = store.read("RELIANCE", "NSE", Timeframe.D1)
+    assert len(current_stored) == 5
+    assert current_stored[-1].timestamp == initial_candles[-1].timestamp
+
+    # 7. Verify no temporary files remain
+    tmp_files = list(partition_dir.glob("*.tmp*"))
+    assert len(tmp_files) == 0
+
+
+def test_exact_equality_detects_tiny_difference_as_conflict(tmp_path):
+    """Regression test: OHLCV differing by a very small amount must be flagged as conflict."""
+    store = ParquetHistoricalDataStore(base_path=tmp_path / "store")
+    service = HistoricalDataIngestionService(store=store)
+
+    # Commit initial 5 candles
+    initial_candles = generate_synthetic_daily_candles(5)
+    csv_initial = tmp_path / "initial.csv"
+    write_csv_file(csv_initial, initial_candles)
+    s1 = service.ingest(csv_initial, "csv", "RELIANCE", "NSE", "1d")
+    assert s1.status == IngestionRunStatus.SUCCESS
+
+    # Create batch with candle[0] having a microscopic difference (1e-10) in close price
+    diff_candles = generate_synthetic_daily_candles(5)
+    c0 = diff_candles[0]
+    diff_candles[0] = Candle(
+        symbol=c0.symbol,
+        exchange=c0.exchange,
+        timeframe=c0.timeframe,
+        timestamp=c0.timestamp,
+        open=c0.open,
+        high=c0.high,
+        low=c0.low,
+        close=c0.close + 1e-10,
+        volume=c0.volume,
+    )
+
+    csv_diff = tmp_path / "tiny_diff.csv"
+    write_csv_file(csv_diff, diff_candles)
+
+    # Must be flagged as conflict and NOT silently accepted as duplicate
+    s2 = service.ingest(csv_diff, "csv", "RELIANCE", "NSE", "1d")
+    assert s2.status == IngestionRunStatus.FAILED
+    assert s2.conflicts >= 1
+    assert s2.records_written == 0
