@@ -366,11 +366,98 @@ QuantPilot provides an atomic, offline historical market data ingestion pipeline
 
 ---
 
+## Phase 3 — Quantitative Analysis & Indicator Engine
+
+Phase 3 implements a deterministic, provider-independent quantitative evidence engine that consumes trusted Phase 2 historical data and calculates 21 canonical technical features without making subjective trading decisions.
+
+```text
+                 Phase 2
+        Canonical Historical Data
+                    │
+                    ▼
+        HistoricalDataRepository
+                    │
+                    ▼
+             Quant Engine
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+      Trend      Momentum     Volume
+        │           │           │
+        ├───────────┼───────────┤
+        ▼           ▼           ▼
+    Volatility   Structure   Relative Strength
+        │           │           │
+        └───────────┼───────────┘
+                    ▼
+          Indicator / Feature Set
+                    │
+                    ▼
+          Quantitative Evidence
+         (Auditable Provenance)
+                    │
+                    ▼
+             Phase 4 Input
+```
+
+### Core Architecture & Invariants
+
+- **Evidence, Not Signals**: Phase 3 outputs purely factual quantitative metrics (`IndicatorSeries`, `IndicatorValue`). Zero `BUY`/`SELL`/`HOLD`/`WAIT` decisions, zero trading rules, zero composite quant scoring.
+- **Strict Anti-Lookahead Guarantee**: Calculation at timestamp $T$ strictly observes data available at or before $T$. Verified via prefix vs. full series regression tests.
+- **Zero Silent Imputation**: If insufficient data is provided (e.g. 50 bars for 200 SMA), the engine returns `status = INSUFFICIENT_DATA` and `value = None`. No forward-filling or manufactured numbers.
+- **Fail-Closed Validation**: Incoming candle series must be strictly ascending, non-empty, UTC timezone-aware, uniform in timeframe/symbol/exchange, and free from NaN/Inf.
+- **Zero-Denominator Safety**:
+  - `rvol`: If $\text{VolSMA} == 0 \implies \text{status} = \text{INVALID}, \text{value} = \text{None}$ (for both $0/0$ and $\text{pos}/0$).
+  - `volume_change`: If $V_{t-1} == 0 \implies \text{status} = \text{INVALID}, \text{value} = \text{None}$.
+- **Bollinger Bands Precedence**:
+  - $\text{Middle} \le 0 \implies \text{INVALID}, \text{value} = \text{None}$.
+  - Else if $\sigma == 0$ (positive middle, zero variance) $\implies \text{VALID}, \text{bandwidth} = 0.0, \text{percent\_b} = 0.5$.
+  - Else $\implies$ standard Bollinger calculation.
+- **Deterministic Provenance**: `IndicatorProvenance` is strictly deterministic (no runtime timestamps). Runtime execution metadata is decoupled into `QuantRunContext`.
+- **Relative Strength Exact Alignment**: Asset and benchmark timestamps must match exactly in UTC. No interpolation or forward fill; missing benchmark timestamps yield `INSUFFICIENT_DATA`.
+
+### 21 Canonical Registered Indicators
+
+| Group | Indicator Name | Class | Canonical Identifier | Default Lookback |
+| :--- | :--- | :--- | :--- | :--- |
+| **Trend** | Simple Moving Average | `SMAIndicator` | `sma` | 20 |
+| | Exponential Moving Average | `EMAIndicator` | `ema` | 20 |
+| | Price vs SMA Ratio | `PriceVsSMAIndicator` | `price_vs_sma` | 20 |
+| | SMA Slope | `SMASlopeIndicator` | `sma_slope` | 20 (lag 1) |
+| | EMA Slope | `EMASlopeIndicator` | `ema_slope` | 20 (lag 1) |
+| **Momentum** | Rate of Change | `ROCIndicator` | `roc` | 14 |
+| | Relative Strength Index | `RSIIndicator` | `rsi` | 14 (Wilder) |
+| | Moving Avg Convergence Divergence | `MACDIndicator` | `macd` | 12, 26, 9 |
+| **Volume** | Volume SMA | `VolumeSMAIndicator` | `volume_sma` | 20 |
+| | Relative Volume | `RVOLIndicator` | `rvol` | 20 |
+| | Volume Change (%) | `VolumeChangeIndicator` | `volume_change` | 1 |
+| | On-Balance Volume | `OBVIndicator` | `obv` | Cumulative |
+| **Volatility** | True Range | `TrueRangeIndicator` | `true_range` | 1 |
+| | Average True Range | `ATRIndicator` | `atr` | 14 (Wilder) |
+| | Normalized ATR (NATR %) | `NATRIndicator` | `natr` | 14 |
+| | Rolling Sample Std Deviation | `RollingStdDevIndicator` | `rolling_std` | 20 ($N-1$) |
+| | Bollinger Bands & Bandwidth | `BollingerBandsIndicator` | `bollinger_bands` | 20 (2.0 std) |
+| **Structure** | Rolling High | `RollingHighIndicator` | `rolling_high` | 20 |
+| | Rolling Low | `RollingLowIndicator` | `rolling_low` | 20 |
+| | Breakout & Distance Features | `StructureBreakoutIndicator` | `structure_breakout_distance` | 20 |
+| **Relative Strength** | Relative Strength vs Benchmark | `RelativeStrengthIndicator` | `relative_strength` | 20 |
+
+### Scaling Benchmarks
+Informational performance benchmarks are executed via:
+```bash
+python -m pytest -m benchmark -s
+```
+Normal `pytest` excludes benchmark runs by default to maintain fast sub-second CI validation.
+
+---
+
 ## Current Status
 
 - [x] **Phase 1: Bootstrap & Security** (Security foundation, centralized settings, SimulatedBroker, CI, secrets scanning)
 - [x] **Phase 2A: Canonical Market Data Foundation** (Canonical models, Pydantic v2 validation, gap/staleness detection, MockMarketDataProvider, Zerodha boundary)
 - [x] **Phase 2B: Historical Market Data & Storage** (Parquet store, idempotent merging, local provider, query repository, Zerodha historical boundary)
 - [x] **Phase 2C: Historical Data Ingestion & Dataset Management** (CSV/Parquet ingestion, atomic persistence, deduplication, conflict detection, CLI, coverage reports)
-- [ ] *Future Phases*: Technical indicators, Quantitative evidence engine, Risk rules, Paper trading, Live trading.
+- [x] **Phase 3: Quantitative Analysis & Indicator Engine** (Deterministic quant engine, 21 registered indicators, auditable provenance, zero-denominator safety, anti-lookahead guarantees, decoupled scaling benchmarks)
+- [ ] *Future Phases*: Strategy formulation, Risk rules, Paper trading, Live trading.
+
 

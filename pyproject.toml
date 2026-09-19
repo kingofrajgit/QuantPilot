@@ -35,8 +35,10 @@ pythonpath = ["src"]
 markers = [
     "integration: integration tests between components",
     "external: tests requiring external service credentials (opt-in; skipped if missing)",
+    "benchmark: performance and scaling benchmarks (opt-in; excluded from normal test runs)",
 ]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not benchmark and not external'"
+
 
 [tool.ruff]
 line-length = 100
