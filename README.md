@@ -451,6 +451,53 @@ Normal `pytest` excludes benchmark runs by default to maintain fast sub-second C
 
 ---
 
+## Phase 4 — Market Regime & Market Structure Engine
+
+Phase 4 builds directly on Phase 2 canonical candles and Phase 3 quantitative indicators to provide deterministic, stateless, and auditable **market-context and regime classification**. It answers *"What type of market environment are we observing?"* without generating trading signals, recommendations, or allocation decisions.
+
+```
+            Phase 3 Quantitative Evidence & Phase 2 Candles
+                                 │
+                                 ▼
+                     RegimeEngine (Stateless)
+        ├── TrendClassifier       (BULLISH, BEARISH, SIDEWAYS)
+        ├── MomentumClassifier    (POSITIVE, NEGATIVE, NEUTRAL)
+        ├── VolatilityClassifier  (LOW, NORMAL, HIGH via BBW)
+        ├── VolumeClassifier      (HIGH, NORMAL, LOW, ACC, DIST) [Independent Context]
+        └── StructureClassifier   (BREAKOUT, BREAKDOWN, CONSOLIDATION, TRENDING, RANGING)
+                                 │
+                                 ▼
+                    RegimeCombiner (Precedence Matrix)
+                                 │
+                                 ▼
+                    Raw CompositeRegime at Timestamp T
+                                 │
+                                 ▼
+              MarketRegimeContext / RegimeContextSeries
+                                 │
+                                 ▼
+                  Phase 5 Strategy Engine (Future)
+```
+
+### Core Architecture & Invariants
+
+- **100% Stateless**: Every timestamp $T$ is classified independently using only evidence available at or before $T$. Zero mutable cross-candle state, zero candidate/confirmed state machines, zero transition counters.
+- **Indicator-Driven Sufficiency**: Zero hardcoded global warmup indices. Sufficiency is determined strictly by the `status` and `value` of required Phase 3 indicators. If any required indicator is not `VALID`, that dimension evaluates to `INSUFFICIENT_DATA`. `CompositeRegime` becomes `INSUFFICIENT_DATA` if and only if any required composite dimension is insufficient.
+- **Strict Anti-Lookahead Breakout Exclusion**: The breakout channel strictly compares $C_t$ against prior completed candles $\max(H_{t-N \dots t-1})$ and $\min(L_{t-N \dots t-1})$. Candle $t$ never participates in defining its own breakout bounds.
+- **Independent Volume Context**: `VolumeRegime` is an independent contextual dimension (`MarketRegimeContext.volume`) consumed directly for trade context but strictly excluded from `StructureClassifier` and `CompositeRegime` to prevent hidden composite weighting.
+- **Bollinger Bandwidth Volatility**: Volatility regime is classified strictly via Bollinger Bandwidth (`bandwidth`). NATR is completely removed from dependencies.
+- **Strict 8-Step Composite Precedence Sequence**:
+  1. `INSUFFICIENT_DATA` (any composite dimension incomplete)
+  2. `DIVERGENT` (Bullish Trend + Negative Momentum, or Bearish Trend + Positive Momentum)
+  3. `VOLATILE_UNSTRUCTURED` (High Volatility + Ranging Structure)
+  4. `BULLISH_TRENDING_EXPANSION` / `BEARISH_TRENDING_EXPANSION`
+  5. `BULLISH_CONSOLIDATION` / `BEARISH_CONSOLIDATION`
+  6. `COMPRESSION` (Low Volatility + Consolidation Structure)
+  7. `SIDEWAYS_RANGE` (Sideways Trend + Ranging or Consolidation)
+  8. `UNKNOWN` (Valid unclassified market action)
+
+---
+
 ## Current Status
 
 - [x] **Phase 1: Bootstrap & Security** (Security foundation, centralized settings, SimulatedBroker, CI, secrets scanning)
@@ -458,6 +505,7 @@ Normal `pytest` excludes benchmark runs by default to maintain fast sub-second C
 - [x] **Phase 2B: Historical Market Data & Storage** (Parquet store, idempotent merging, local provider, query repository, Zerodha historical boundary)
 - [x] **Phase 2C: Historical Data Ingestion & Dataset Management** (CSV/Parquet ingestion, atomic persistence, deduplication, conflict detection, CLI, coverage reports)
 - [x] **Phase 3: Quantitative Analysis & Indicator Engine** (Deterministic quant engine, 21 registered indicators, auditable provenance, zero-denominator safety, anti-lookahead guarantees, decoupled scaling benchmarks)
+- [x] **Phase 4: Market Regime & Market Structure Engine** (Stateless regime engine, 5 discrete dimensions, 8-step precedence matrix, strict current-candle breakout exclusion, independent volume context, indicator-driven sufficiency, anti-lookahead guarantees)
 - [ ] *Future Phases*: Strategy formulation, Risk rules, Paper trading, Live trading.
 
 
